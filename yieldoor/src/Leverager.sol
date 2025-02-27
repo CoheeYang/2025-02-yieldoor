@@ -94,14 +94,14 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         IERC20(token0).forceApprove(lendingPool, type(uint256).max);
         IERC20(token1).forceApprove(lendingPool, type(uint256).max);
     }
-
+    //@audit Q：似乎并未对LP有任何的数量限制
     /// @notice Opens up a leveraged position within a certain Vault.
     /// @dev Check the ILeverager contract for comments on all LeverageParams arguments
     /// In order to achieve this, contract first "flashloans" funds from the lending pool to open a position
     /// Then, it borrows the denomination token and performs swaps (if necessary)
     /// Any unused borrowed tokens, as well as flashloaned tokens are then repaid.
     function openLeveragedPosition(LeverageParams calldata lp) external nonReentrant returns (uint256 _id) {
-        require(vaultParams[lp.vault].leverageEnabled, "leverage not enabled");
+        require(vaultParams[lp.vault].leverageEnabled, "leverage not enabled");///查看vault是否存在
 
         Position memory up;
         up.token0 = IVault(lp.vault).token0();
@@ -110,14 +110,14 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
         // we check the activity here, in order to make sure TWAP price is accurate
         // TWAP lags behind, so if we don't check, attacker might utilize old price
-        uint256 price = IVault(lp.vault).twapPrice();
+        uint256 price = IVault(lp.vault).twapPrice();//@audit E:得到时间加权价格，防止闪电贷预言机攻击
         require(IVault(lp.vault).checkPoolActivity(), "market too volatile");
 
         IERC20(up.token0).safeTransferFrom(msg.sender, address(this), lp.amount0In);
-        IERC20(up.token1).safeTransferFrom(msg.sender, address(this), lp.amount1In);
+        IERC20(up.token1).safeTransferFrom(msg.sender, address(this), lp.amount1In);//将token转入此合约
 
         uint256 delta0 = lp.vault0In - lp.amount0In;
-        uint256 delta1 = lp.vault1In - lp.amount1In;
+        uint256 delta1 = lp.vault1In - lp.amount1In;//计算要的钱和实际给的钱的差额 //借一波标的资产的额度
         if (delta0 > 0) ILendingPool(lendingPool).pullFunds(up.token0, delta0); // we flashloan the difference between amounts desired to be deposited in Vault
         if (delta1 > 0) ILendingPool(lendingPool).pullFunds(up.token1, delta1); // and the amount pulled from the user
 
@@ -128,11 +128,11 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
         up.initCollateralUsd = _calculateTokenValues(up.token0, up.token1, a0, a1, price); // returns the USD price in 1e18
         uint256 bPrice = IPriceFeed(pricefeed).getPrice(lp.denomination);
-        up.initCollateralValue = up.initCollateralUsd * (10 ** ERC20(lp.denomination).decimals()) / bPrice;
+        up.initCollateralValue = up.initCollateralUsd * (10 ** ERC20(lp.denomination).decimals()) / bPrice;//@audit Q: 这里的计算是什么意思
 
         {
             // we first borrow the maximum amount the user is willing to borrow. Any unused within the swaps is later repaid.
-            ILendingPool(lendingPool).borrow(lp.denomination, lp.maxBorrowAmount);
+            ILendingPool(lendingPool).borrow(lp.denomination, lp.maxBorrowAmount);//借一波计价货币的额度
 
             IMainnetRouter.ExactOutputParams memory swapParams;
 
@@ -140,7 +140,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             // Otherwise, attacker could utilize this to swap out all of the share tokens out of here.
             // We do not verify here that the output tokens is one of the lp tokens. If for some reason it isn't
             // The transaction will later revert within `pushFunds`
-            if (a0 > lp.amount0In && up.token0 != lp.denomination) {
+            if (a0 > lp.amount0In && up.token0 != lp.denomination) {//实际存入vault的金额大于用户给的金额
                 swapParams = abi.decode(lp.swapParams1, (IMainnetRouter.ExactOutputParams));
 
                 address tokenIn = _getTokenIn(swapParams.path);
@@ -148,7 +148,8 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
                 IERC20(tokenIn).forceApprove(swapRouter, swapParams.amountInMaximum);
 
-                swapParams.amountOut = a0 - lp.amount0In;
+                swapParams.amountOut = a0 - lp.amount0In;//@audit E: 假设用户有1ETH作为amount0In,而vault0In存入的是2ETH，闪电贷借了1ETH,存入vaulta0蹦出2.1ETH，
+                                                            //        用swap先换出1.1ETH差额，之后剩下的钱还给那个fund
                 IMainnetRouter(swapRouter).exactOutput(swapParams);
                 IERC20(tokenIn).forceApprove(swapRouter, 0);
             }
@@ -168,16 +169,16 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         if (delta0 > 0) ILendingPool(lendingPool).pushFunds(up.token0, delta0);
         if (delta1 > 0) ILendingPool(lendingPool).pushFunds(up.token1, delta1);
 
-        uint256 denomBalance = IERC20(lp.denomination).balanceOf(address(this));
-        ILendingPool(lendingPool).repay(lp.denomination, denomBalance);
+        uint256 denomBalance = IERC20(lp.denomination).balanceOf(address(this));//@audit Q: 为什么用address(this) 还一波计价资产的价格
+        ILendingPool(lendingPool).repay(lp.denomination, denomBalance);//@audit Q: 转这个账户合约的所有token会不会出现问题？如果有人提前偷偷给这个合约转了token怎么办
 
         // if for some reason there have previously been a large amount of tokens "stuck", this could fail
         // this is ok as 1) its unlikely 2) anyone could sweep them 3) likely MEV bot would sweep them within seconds
         // Although opening positions is time-sensitive, please do not report this as a vulnerability, ty.
-        up.borrowedAmount = lp.maxBorrowAmount - denomBalance;
+        up.borrowedAmount = lp.maxBorrowAmount - denomBalance;//@audit bug:如果有人偷偷转了token在这里怎么说，repay中永远不会将这笔钱转出去，因为它有个大于变等于的情况，这笔钱将一直在这，但是每个人的borrowedAmount都被低估了
         up.initBorrowedUsd = up.borrowedAmount * bPrice / (10 ** ERC20(lp.denomination).decimals());
 
-        up.borrowedIndex = ILendingPool(lendingPool).getCurrentBorrowingIndex(lp.denomination);
+        up.borrowedIndex = ILendingPool(lendingPool).getCurrentBorrowingIndex(lp.denomination);//借款利率
         up.denomination = lp.denomination;
         up.shares = shares;
         up.vault = lp.vault;
@@ -192,10 +193,10 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         // user could swap the all of the denom tokens for pretty much nothing in return
         // (sandwiching the tx himself). This way they'd steal the borrowed tokens and create
         // underwater position, which would force governance to liquidate it at a loss.
-        require(!isLiquidateable(_id), "position can't be liquidateable upon opening");
+        require(!isLiquidateable(_id), "position can't be liquidateable upon opening"); //TODO 我还没检查这个函数来验证bug
 
         _mint(msg.sender, _id);
-        _sweepTokens(up.token0, up.token1);
+        _sweepTokens(up.token0, up.token1);//@audit 这么好心？那我每次存一波钱再借一波修改额度，还能把钱退还给我
 
         return _id;
     }
@@ -391,24 +392,26 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         // Assuming a price of X, a LP position has its lowest value when the pool price is exactly X.
         // Any price movement, would actually overvalue the position.
         // For this reason, attackers cannot force a position to become liquidateable with a swap.
-        (uint256 vaultBal0, uint256 vaultBal1) = IVault(pos.vault).balances();
-        uint256 userBal0 = pos.shares * vaultBal0 / vaultSupply;
-        uint256 userBal1 = pos.shares * vaultBal1 / vaultSupply;
+        (uint256 vaultBal0, uint256 vaultBal1) = IVault(pos.vault).balances();//交易对token的余额（其实不在vault，都在strategy中）
+        uint256 userBal0 = pos.shares * vaultBal0 / vaultSupply;//@audit Q:似乎没有排除vaultSupply为0的情况，也没有考虑decimal向下取整的问题
+        uint256 userBal1 = pos.shares * vaultBal1 / vaultSupply;//计价user的份额时，是使用了对应share在total supply中的占比*strategy池中token对余额
         uint256 price = IVault(pos.vault).twapPrice();
 
-        uint256 totalValueUSD = _calculateTokenValues(pos.token0, pos.token1, userBal0, userBal1, price);
-        uint256 bPrice = IPriceFeed(pricefeed).getPrice(pos.denomination);
-        uint256 totalDenom = totalValueUSD * (10 ** ERC20(pos.denomination).decimals()) / bPrice;
+        uint256 totalValueUSD = _calculateTokenValues(pos.token0, pos.token1, userBal0, userBal1, price);//所有代币的美元价值
+        uint256 bPrice = IPriceFeed(pricefeed).getPrice(pos.denomination);//计价货币的美元价值*decimal，来算后面的计价代币数量
+        uint256 totalDenom = totalValueUSD * (10 ** ERC20(pos.denomination).decimals()) / bPrice;//@audit Q:bug 你确定chainlink pricefeed中的decimal和token的decimal是一样的吗，还有如果取到0了怎么办，那不是所有函数全死？
 
-        uint256 bIndex = ILendingPool(lendingPool).getCurrentBorrowingIndex(pos.denomination);
+        uint256 bIndex = ILendingPool(lendingPool).getCurrentBorrowingIndex(pos.denomination);//计算利率
         uint256 owedAmount = pos.borrowedAmount * bIndex / pos.borrowedIndex;
 
         /// here we make a calculation what would be the necessary collateral
         /// if we had the same borrowed amount, but at max leverage. Check docs for better explanation why.
-        uint256 base = owedAmount * 1e18 / (vp.maxTimesLeverage - 1e18);
+        uint256 base = owedAmount * 1e18 / (vp.maxTimesLeverage - 1e18);//@audit Q:bug 会有vp.maxTimesLeverage == 1e18的情况吗？，没有1e18，会有15e17的情况吗,有9e17的情况吗
+        //base 这个算法：欠的金额/最大杠杆-1 ,杠杆为2，你得拿一倍的抵押物，杠杆为3，你拿欠钱的1/2的抵押物
         base = base < pos.initCollateralValue ? base : pos.initCollateralValue;
-
-        if (owedAmount > totalDenom || totalDenom - owedAmount < vp.minCollateralPct * base / 1e18) return true;
+        //欠的钱大于了计价货币 或者 计价货币-欠钱的剩余额<最小抵押物百分比*base
+        if (owedAmount > totalDenom || totalDenom - owedAmount < vp.minCollateralPct * base / 1e18) return true;//@audit Q: percentage又来了，会不会又出现decimal的问题，比如perecentage为20%,那是20*base/1e18,
+                                                                                                                //如果是20e17 * base /1e18 会不会有问题？
         else return false;
     }
 
@@ -441,7 +444,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
         // If chPrice0 is 0, it means token0 doesnt have a pricefeed.
         // Therefore, convert it token1 and from there, convert it to USD
-        if (chPrice0 == 0) {
+        if (chPrice0 == 0) {//@audit Q: IDK the calculation here 
             usdValue += (amount0 * price / PRECISION) * chPrice1 / decimals1;
         } else if (chPrice1 == 0) {
             usdValue += amount1 * PRECISION / price * chPrice0 / decimals0;

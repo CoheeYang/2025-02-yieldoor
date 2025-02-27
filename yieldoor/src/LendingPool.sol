@@ -203,7 +203,7 @@ contract LendingPool is ILendingPool, Ownable, ReentrancyGuard {
 
         return amount;
     }
-
+    //@audit Q:这个闪电贷在干嘛？
     /// @notice Allows leverager to pull tokens.
     /// @dev Should always push the same amount of tokens back, at the end of the transaction
     function pullFunds(address asset, uint256 amount) external nonReentrant {
@@ -267,7 +267,7 @@ contract LendingPool is ILendingPool, Ownable, ReentrancyGuard {
 
     /// @notice View function to get a Reserve's current borrowing index.
     function getCurrentBorrowingIndex(address asset) public view returns (uint256) {
-        DataTypes.ReserveData storage reserve = reserves[asset];
+        DataTypes.ReserveData storage reserve = reserves[asset];//@audit Q:为什么写storage?
 
         return reserve.latestBorrowingIndex();
     }

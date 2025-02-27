@@ -5,7 +5,7 @@ import "../types/DataTypes.sol";
 
 library InterestRateUtils {
     // scaling everything by 1e27
-    uint256 constant PRECISION = 1e27;
+    uint256 constant PRECISION = 1e27;//@audit Q:不是30吗？
     /// @dev Ignoring leap years
     uint256 internal constant SECONDS_PER_YEAR = 365 days;
 
@@ -21,16 +21,16 @@ library InterestRateUtils {
         view
         returns (uint256 borrowingRate)
     {
-        if (utilizationRate <= config.utilizationA) {
-            if (config.utilizationA == 0) {
-                return config.borrowingRateA;
+        if (utilizationRate <= config.utilizationA) {//1.在资金利用率小于等于uA时
+            if (config.utilizationA == 0) {//如果uA设置为0
+                return config.borrowingRateA;//直接返回对应的最小利率
             }
-            borrowingRate = utilizationRate * config.borrowingRateA / config.utilizationA;
-        } else if (utilizationRate <= config.utilizationB) {
-            if (config.utilizationB == config.utilizationA) {
+            borrowingRate = utilizationRate * config.borrowingRateA / config.utilizationA;//如果uA不为0，借款利率按uR/uA的比率乘以最小利率
+        } else if (utilizationRate <= config.utilizationB) {//2.资金利用率大于uA但是小于等于uB时
+            if (config.utilizationB == config.utilizationA) {//如果uB等于uA则直接返回uB对应的利率
                 return config.borrowingRateB;
             }
-            borrowingRate = (uint256(config.borrowingRateB) - config.borrowingRateA)
+            borrowingRate = (uint256(config.borrowingRateB) - config.borrowingRateA)//不相等的情况下，我们需要计算此时的线性利率
                 * (utilizationRate - config.utilizationA) // (rateB - rateA) * (uR - uA) / (uB - uA) + bA
                 / (config.utilizationB - config.utilizationA) + config.borrowingRateA;
         } else {

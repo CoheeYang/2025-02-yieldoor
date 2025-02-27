@@ -125,7 +125,7 @@ contract Strategy is Ownable, IStrategy {
     /// @notice Returns the token0/token1 spot price in 1e30 precision
     function price() public view returns (uint256 _price) {
         (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-        _price = FullMath.mulDiv(sqrtPriceX96, 1e15, 2 ** 96) ** 2;
+        _price = FullMath.mulDiv(sqrtPriceX96, 1e15, 2 ** 96) ** 2;//@audit Q: 计算是对的吗
     }
 
     /// @notice Withdraws a user's portion of the assets

@@ -7,6 +7,8 @@ library DataTypes {
     // Interest Rate Config
     // The utilization rate and borrowing rate are expressed in RAY
     // utilizationB must gt utilizationA
+    //@audit Q: 这个结构有意思，uB虽然嘴上说要规定大于uA,但后面使用时会检查这个吗？
+    //          这个对应的利率也没规定死，会不会出意外？
     struct InterestRateConfig {
         // The utilization rate a, the end of the first slope on interest rate curve
         uint256 utilizationA;
