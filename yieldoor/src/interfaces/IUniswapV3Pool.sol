@@ -135,7 +135,7 @@ interface IUniswapV3Pool {
         view
         returns (
             uint32 blockTimestamp,
-            int56 tickCumulative,
+            int56 tickCumulative, //代表a ,TWAP = 1.0001^(at1-at2/t1-t2)
             uint160 secondsPerLiquidityCumulativeX128,
             bool initialized
         );

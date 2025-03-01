@@ -213,14 +213,14 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         require(wp.pctWithdraw <= 1e18 && wp.pctWithdraw > 0.01e18, "invalid pctWithdraw");
 
         address borrowed = up.denomination;
-        uint256 sharesToWithdraw = up.shares * wp.pctWithdraw / 1e18;
+        uint256 sharesToWithdraw = up.shares * wp.pctWithdraw / 1e18;//@audit Q:不知道拿的是什么，如果up.shares也是拿1e18可能问题不大，不知道他这个口径对齐了吗
 
-        (uint256 amountOut0, uint256 amountOut1) =
+        (uint256 amountOut0, uint256 amountOut1) =//实际取出的amountOut
             IVault(up.vault).withdraw(sharesToWithdraw, wp.minAmount0, wp.minAmount1);
 
         uint256 bIndex = ILendingPool(lendingPool).getCurrentBorrowingIndex(borrowed);
         uint256 totalOwedAmount = up.borrowedAmount * bIndex / up.borrowedIndex;
-        uint256 owedAmount = totalOwedAmount * wp.pctWithdraw / 1e18;
+        uint256 owedAmount = totalOwedAmount * wp.pctWithdraw / 1e18; //@audit Q：总感觉这边向下取整的问题很大
 
         uint256 amountToRepay = owedAmount; // this should be transferred to yAsset
 
@@ -233,7 +233,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             uint256 repayFromWithdraw = amountOut1 < owedAmount ? amountOut0 : owedAmount;
             owedAmount -= repayFromWithdraw;
             amountOut1 -= repayFromWithdraw;
-        }
+        }//类似liquidatePosition
 
         if (wp.hasToSwap) {
             // ideally, these swaps should have the user as a recipient. Then, we'll just pull the necessary part from them.
@@ -278,9 +278,9 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             // but since borrowed asset's price has dropped, position is less likely to be liquidated
             // 2) Price has increased. In this case the user has to remain higher position value.
             require(
-                up.initBorrowedUsd * (1e18 - wp.pctWithdraw) / 1e18 > minBorrow,
+                up.initBorrowedUsd * (1e18 - wp.pctWithdraw) / 1e18 > minBorrow,//20e18
                 "remaining should be at least minBorrow"
-            );
+            );//@audit Q:无法理解
 
             // here the BorrowedUSD variables do not represent the current value of the borrowed asset, that's intentional.
             vaultParams[up.vault].currBorrowedUSD -= up.initBorrowedUsd * wp.pctWithdraw / 1e18;
@@ -306,7 +306,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         uint256 owedAmount = up.borrowedAmount * currBIndex / up.borrowedIndex;
         uint256 repayAmount = owedAmount;
 
-        uint256 price = IVault(up.vault).twapPrice();
+        uint256 price = IVault(up.vault).twapPrice();//@audit Q:选择了不检查Pool的活动性，这样会不会有问题
         // we do not check here for pool activity, in order to be able to liquidate during very volatile markets
         // otherwise, we'd risk accruing bad debt.
 
@@ -315,10 +315,10 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
         uint256 totalValueUSD = _calculateTokenValues(up.token0, up.token1, amount0, amount1, price);
 
-        uint256 bPrice = IPriceFeed(pricefeed).getPrice(up.denomination);
-        uint256 borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals();
+        uint256 bPrice = IPriceFeed(pricefeed).getPrice(up.denomination);//E 计价代币的美元价值
+        uint256 borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals();//@audit Q:再遇除号
 
-        if (totalValueUSD > borrowedValue) {
+        if (totalValueUSD > borrowedValue) {//赚钱了收点手续费
             // What % of the amountsOut are profit is calculated by `(totalValueUSD - borrowedUSD) / totalValueUSD`
             // Then, on top of that, we calculate the protocol fee and scale it in 1e18.
 
@@ -332,7 +332,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             amount1 -= pf1;
         }
 
-        if (up.denomination == up.token0) {
+        if (up.denomination == up.token0) {//如果计价货币是token0，会选择欠款金额和token0取出的值amount0中的较小值
             uint256 repayFromWithdraw = amount0 < owedAmount ? amount0 : owedAmount;
             owedAmount -= repayFromWithdraw;
             amount0 -= repayFromWithdraw;
@@ -344,7 +344,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             amount1 -= repayFromWithdraw;
         }
 
-        if (liqParams.hasToSwap) {
+        if (liqParams.hasToSwap) {//做swap，虽然不知道为什么做
             // ideally, these swaps should have the user as a recipient. Then, we'll just pull the necessary part from them.
 
             IMainnetRouter.ExactInputParams memory swapParams =
@@ -367,16 +367,16 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             }
         }
 
-        IERC20(up.denomination).safeTransferFrom(msg.sender, address(this), owedAmount);
+        IERC20(up.denomination).safeTransferFrom(msg.sender, address(this), owedAmount);//如果上面owedAmount>amount,就是资不抵债，减去amount，先从msg.sender转移该亏空头寸数量,保证后续repay成功
+                                                                                        //如果owedAmount<amount,就是资高过债务，这一步就相当于转0元
+        ILendingPool(lendingPool).repay(up.denomination, repayAmount);              //repay还款
 
-        ILendingPool(lendingPool).repay(up.denomination, repayAmount);
-
-        if (amount0 > 0) IERC20(up.token0).safeTransfer(msg.sender, amount0);
+        if (amount0 > 0) IERC20(up.token0).safeTransfer(msg.sender, amount0);       //归还清算者剩余资金
         if (amount1 > 0) IERC20(up.token1).safeTransfer(msg.sender, amount1);
 
-        vaultParams[up.vault].currBorrowedUSD -= up.initBorrowedUsd;
+        vaultParams[up.vault].currBorrowedUSD -= up.initBorrowedUsd;    //更新对应的vault的借款总额
 
-        _burn(liqParams.id);
+        _burn(liqParams.id);    //摧毁nft
         delete positions[liqParams.id];
     }
 
@@ -400,7 +400,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         uint256 totalValueUSD = _calculateTokenValues(pos.token0, pos.token1, userBal0, userBal1, price);//所有代币的美元价值
         uint256 bPrice = IPriceFeed(pricefeed).getPrice(pos.denomination);//计价货币的美元价值*decimal，来算后面的计价代币数量
         uint256 totalDenom = totalValueUSD * (10 ** ERC20(pos.denomination).decimals()) / bPrice;//@audit Q:bug 你确定chainlink pricefeed中的decimal和token的decimal是一样的吗，还有如果取到0了怎么办，那不是所有函数全死？
-
+                                                                                                 //       E:补充 bPrice永远大于0，否则revert，需要管理员确定用有priceFeed的代币
         uint256 bIndex = ILendingPool(lendingPool).getCurrentBorrowingIndex(pos.denomination);//计算利率
         uint256 owedAmount = pos.borrowedAmount * bIndex / pos.borrowedIndex;
 
@@ -409,7 +409,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         uint256 base = owedAmount * 1e18 / (vp.maxTimesLeverage - 1e18);//@audit Q:bug 会有vp.maxTimesLeverage == 1e18的情况吗？，没有1e18，会有15e17的情况吗,有9e17的情况吗
         //base 这个算法：欠的金额/最大杠杆-1 ,杠杆为2，你得拿一倍的抵押物，杠杆为3，你拿欠钱的1/2的抵押物
         base = base < pos.initCollateralValue ? base : pos.initCollateralValue;
-        //欠的钱大于了计价货币 或者 计价货币-欠钱的剩余额<最小抵押物百分比*base
+        //欠的计价代币数量的钱大于了现有的计价货币数量 或者 计价货币-欠钱的剩余额<最小抵押物百分比*base
         if (owedAmount > totalDenom || totalDenom - owedAmount < vp.minCollateralPct * base / 1e18) return true;//@audit Q: percentage又来了，会不会又出现decimal的问题，比如perecentage为20%,那是20*base/1e18,
                                                                                                                 //如果是20e17 * base /1e18 会不会有问题？
         else return false;
@@ -501,7 +501,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         _;
     }
 
-    // --- Owner only functions
+    // ---------------------- Owner only functions------------------------
 
     /// @notice Allows users to borrow a certain token from the LendingPool.
     /// @param asset Asset to be enabled for borrows.

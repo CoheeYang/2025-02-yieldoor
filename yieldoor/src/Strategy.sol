@@ -122,77 +122,12 @@ contract Strategy is Ownable, IStrategy {
         _;
     }
 
-    /// @notice Returns the token0/token1 spot price in 1e30 precision
-    function price() public view returns (uint256 _price) {
-        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
-        _price = FullMath.mulDiv(sqrtPriceX96, 1e15, 2 ** 96) ** 2;//@audit Q: 计算是对的吗
-    }
-
-    /// @notice Withdraws a user's portion of the assets
-    /// @dev Withdraws the portion evenly from the main position, secondary position and idle balances
-    /// @dev Assumes collectFees has been called right before this call
-    function withdrawPartial(uint256 shares, uint256 totalSupply)
-        external
-        onlyVault
-        returns (uint256 amount0Out, uint256 amount1Out)
-    {
-        (uint256 bal0, uint256 bal1) = idleBalances(); // before withdrawing any liquidity, but after collecting fees.
-
-        uint256 liqToRemove = mainPosition.liquidity * shares / totalSupply;
-        (uint256 m0, uint256 m1) =
-            _removeFromPosition(uint128(liqToRemove), mainPosition.tickLower, mainPosition.tickUpper);
-        mainPosition.liquidity -= uint128(liqToRemove);
-
-        liqToRemove = secondaryPosition.liquidity * shares / totalSupply;
-        (uint256 s0, uint256 s1) =
-            _removeFromPosition(uint128(liqToRemove), secondaryPosition.tickLower, secondaryPosition.tickUpper);
-        secondaryPosition.liquidity -= uint128(liqToRemove);
-
-        amount0Out = m0 + s0 + (bal0 * shares / totalSupply);
-        amount1Out = m1 + s1 + (bal1 * shares / totalSupply);
-
-        return (amount0Out, amount1Out);
-    }
-
-    /// @notice Collects all outstanding position fees
-    /// @notice In case there's ongoing vested position, collects the already vested part of it.
-    function collectFees() public {
-        (uint256 preBal0, uint256 preBal1) = idleBalances();
-
-        if (mainPosition.liquidity != 0) collectPositionFees(mainPosition.tickLower, mainPosition.tickUpper);
-        if (secondaryPosition.liquidity != 0) {
-            collectPositionFees(secondaryPosition.tickLower, secondaryPosition.tickUpper);
-        }
-        if (ongoingVestingPosition) {
-            collectPositionFees(vestPosition.tickLower, mainPosition.tickUpper);
-        }
-
-        (uint256 afterBal0, uint256 afterBal1) = idleBalances();
-
-        uint256 protocolFees0 = (afterBal0 - preBal0) * protocolFee / 10_000;
-        uint256 protocolFees1 = (afterBal1 - preBal1) * protocolFee / 10_000;
-
-        if (protocolFees0 > 0) IERC20(token0).safeTransfer(feeRecipient, protocolFees0);
-        if (protocolFees1 > 0) IERC20(token1).safeTransfer(feeRecipient, protocolFees1);
-
-        if (ongoingVestingPosition) {
-            _withdrawPartOfVestingPosition(); // doing that now, otherwise we'd charge protocol fee for the vested position
-        }
-    }
-
-    /// @notice Collects the accumulated fees for a certain position
-    /// @dev Does not check the actually collected values for simplicity.
-    function collectPositionFees(int24 tickLower, int24 tickUpper) internal {
-        IUniswapV3Pool(pool).burn(tickLower, tickUpper, 0);
-        IUniswapV3Pool(pool).collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);
-    }
-
-    /// @notice The funds within the contract which are not currently added as liquidity
-    function idleBalances() public view returns (uint256 amount0, uint256 amount1) {
-        amount0 = IERC20(token0).balanceOf(address(this));
-        amount1 = IERC20(token1).balanceOf(address(this));
-    }
-
+    /*//////////////////////////////////////////////////////////////
+                                FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+    //---               some main logic here                  ----//
+    
+    ///☑️
     /// @notice Removes liquidity from old positions, calculates new ones and adds liquidity to them
     /// @dev Only callable by Rebalancer. Even though it is trusted, some precautions are still taken within the contract itself.
     function rebalance() public onlyRebalancer {
@@ -227,15 +162,91 @@ contract Strategy is Ownable, IStrategy {
         _addLiquidityToSecondaryPosition(sqrtPriceX96, bal0, bal1);
     }
 
+    ///☑️after simple check, it looks fine, but any reentrance issue in vault to call this?
+    /// @notice Withdraws a user's portion of the assets
+    /// @dev Withdraws the portion evenly from the main position, secondary position and idle balances
+    /// @dev Assumes collectFees has been called right before this call
+    function withdrawPartial(uint256 shares, uint256 totalSupply)
+        external
+        onlyVault
+        returns (uint256 amount0Out, uint256 amount1Out)
+    {
+        (uint256 bal0, uint256 bal1) = idleBalances(); // before withdrawing any liquidity, but after collecting fees.
+
+        uint256 liqToRemove = mainPosition.liquidity * shares / totalSupply;
+        (uint256 m0, uint256 m1) =
+            _removeFromPosition(uint128(liqToRemove), mainPosition.tickLower, mainPosition.tickUpper);
+        mainPosition.liquidity -= uint128(liqToRemove);
+
+        liqToRemove = secondaryPosition.liquidity * shares / totalSupply;
+        (uint256 s0, uint256 s1) =
+            _removeFromPosition(uint128(liqToRemove), secondaryPosition.tickLower, secondaryPosition.tickUpper);
+        secondaryPosition.liquidity -= uint128(liqToRemove);
+
+        amount0Out = m0 + s0 + (bal0 * shares / totalSupply);
+        amount1Out = m1 + s1 + (bal1 * shares / totalSupply);
+
+        return (amount0Out, amount1Out);
+    }
+
+    //☑️,one function remaining, but overall it's unlikely to make mistakes
+    /// @notice Collects all outstanding position fees
+    /// @notice In case there's ongoing vested position, collects the already vested part of it.
+    function collectFees() public {
+        (uint256 preBal0, uint256 preBal1) = idleBalances();
+
+        if (mainPosition.liquidity != 0) collectPositionFees(mainPosition.tickLower, mainPosition.tickUpper);
+        if (secondaryPosition.liquidity != 0) {
+            collectPositionFees(secondaryPosition.tickLower, secondaryPosition.tickUpper);
+        }
+        if (ongoingVestingPosition) {
+            collectPositionFees(vestPosition.tickLower, mainPosition.tickUpper);
+        }
+
+        (uint256 afterBal0, uint256 afterBal1) = idleBalances();
+
+        uint256 protocolFees0 = (afterBal0 - preBal0) * protocolFee / 10_000;//protocolFees should be fine as long as they set the right number
+        uint256 protocolFees1 = (afterBal1 - preBal1) * protocolFee / 10_000;
+
+        if (protocolFees0 > 0) IERC20(token0).safeTransfer(feeRecipient, protocolFees0);
+        if (protocolFees1 > 0) IERC20(token1).safeTransfer(feeRecipient, protocolFees1);
+
+        if (ongoingVestingPosition) {//@audit check this one
+            _withdrawPartOfVestingPosition(); // doing that now, otherwise we'd charge protocol fee for the vested position
+        }//unchecked this one, but unlikely to find bugs
+    }
+    ///✅
+    /// @notice Collects the accumulated fees for a certain position
+    /// @dev Does not check the actually collected values for simplicity.
+    function collectPositionFees(int24 tickLower, int24 tickUpper) internal {
+        IUniswapV3Pool(pool).burn(tickLower, tickUpper, 0);//trigger a recalculation of fees owed to a position
+        IUniswapV3Pool(pool).collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);//上面计算完后才可以拿这个取钱
+
+    }
+    ///✅
+    /// @notice The funds within the contract which are not currently added as liquidity
+    function idleBalances() public view returns (uint256 amount0, uint256 amount1) {
+        amount0 = IERC20(token0).balanceOf(address(this));
+        amount1 = IERC20(token1).balanceOf(address(this));
+    }
+
+    //❌@audit it raises potential issue
+    /// @notice Returns the token0/token1 spot price in 1e30 precision
+    function price() public view returns (uint256 _price) {
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+        _price = FullMath.mulDiv(sqrtPriceX96, 1e15, 2 ** 96) ** 2;//((sqrtPriceX96 1e15)/2^96)^2
+    }
+
+    //✅
     /// @notice Calculates and sets the ticks of the main position
     /// @dev Checks if the nearest initializable tick is lower or higher than the current tick
-    function _setMainTicks(int24 tick) internal {
-        int24 halfWidth = int24(positionWidth / 2);
-        int24 modulo = tick % tickSpacing;
-        if (modulo < 0) modulo += tickSpacing; // if tick is negative, modulo is also negative
-        bool isLowerSided = modulo < (tickSpacing / 2);
+    function _setMainTicks(int24 tick) internal {//
+        int24 halfWidth = int24(positionWidth / 2);//positionWidth = x*tickSpacing,x=2,4,6....
+        int24 modulo = tick % tickSpacing; // 
+        if (modulo < 0) modulo += tickSpacing; // 
+        bool isLowerSided = modulo < (tickSpacing / 2);//通过module来看，当前的点tick是离其左边刻度近还是右边刻度近
 
-        int24 tickBorder = tick - modulo;
+        int24 tickBorder = tick - modulo;//tickBorder落在某个tick刻度上，以此为中心向两边伸展出position
         if (!isLowerSided) tickBorder += tickSpacing;
         mainPosition.tickLower = tickBorder - halfWidth;
         mainPosition.tickUpper = tickBorder + halfWidth;
@@ -243,6 +254,7 @@ contract Strategy is Ownable, IStrategy {
         emit NewMainTicks(tickBorder - halfWidth, tickBorder + halfWidth);
     }
 
+    ///☑️, if `LiquidityAmounts.getLiquidityForAmounts()` is correct, then there would be nothing wrong in 90% chance 
     /// @param amount0 Max amount of token0 to add as liquidity to the main position
     /// @param amount1 Max amount of token1 to add as liquidity to the main position
     /// @param sqrtPriceX96 The current sqrtPriceX96 of the underlying Uniswap pool
@@ -260,7 +272,7 @@ contract Strategy is Ownable, IStrategy {
             TickMath.getSqrtRatioAtTick(tickUpper),
             amount0,
             amount1
-        );
+        );//@audit Q: used a function in another file, for now we assume it is correct liquidty
 
         if (liquidity == 0) return (amount0, amount1);
 
@@ -291,7 +303,7 @@ contract Strategy is Ownable, IStrategy {
         if (liquidity > 0) IUniswapV3Pool(pool).mint(address(this), tickLower, tickUpper, liquidity, "test");
         secondaryPosition.liquidity += liquidity;
     }
-
+    ///✅ relys on the correctness of `checkPoolActivity()`
     /// @notice Returns whether price is within range
     /// @dev Makes sure difference between TWAP and spot price is within acceptable deviation
     /// @dev Makes sure there hasn't been big price swings between consecutive observations
@@ -304,14 +316,17 @@ contract Strategy is Ownable, IStrategy {
         if (currentTick < minTick || currentTick > maxTick) return false;
         return checkPoolActivity();
     }
-
+     //@audit require an understanding of observation,it looks fine for now 
     /// @notice Checks the pool prices in consecutive observations, up to TWAP ago.
     /// @dev If there aren't enough observations to reach TWAP ago, returns false
     function checkPoolActivity() public view returns (bool) {
+        //get current tick, 
+        //The index of the last oracle observation that was written,
+        //The current maximum number of observations stored in the pool
         (, int24 tick, uint16 currentIndex, uint16 observationCardinality,,,) = IUniswapV3Pool(pool).slot0();
 
-        uint32 lookAgo = uint32(block.timestamp) - twap;
-
+        uint32 lookAgo = uint32(block.timestamp) - twap;//(300)->5min
+        //i dnk why he call them next ,since the currentIndex we got from slot is the index of the last oracle observation that was written.
         (uint32 nextTimestamp, int56 nextCumulativeTick,,) = IUniswapV3Pool(pool).observations(currentIndex);
 
         int24 nextTick = tick;
@@ -328,7 +343,7 @@ contract Strategy is Ownable, IStrategy {
             (nextTimestamp, nextCumulativeTick) = (timestamp, tickCumulative);
             int24 delta = nextTick - tick;
 
-            if (delta > maxObservationDeviation || delta < -maxObservationDeviation) {
+            if (delta > maxObservationDeviation || delta < -maxObservationDeviation) {//delta>100 or delta<-100
                 return false;
             }
 
@@ -360,19 +375,22 @@ contract Strategy is Ownable, IStrategy {
         return (FullMath.mulDiv(sqrtPrice, 1e15, 2 ** 96) ** 2);
     }
 
+    /// ❌
     /// @notice Sets the secondary position ticks.
     /// @dev This position should always be created consisting of just one of the tokens
     /// @dev Should initially be Out-Of-Range
     function _setSecondaryPositionsTicks(int24 tick) internal {
-        int24 modulo = tick % tickSpacing;
+        int24 modulo = tick % tickSpacing;//当前tick所在tickspace多出的空间，如这个流动性池的tickspace为60，tick=100，那么modulo=40,是第二个tickspace中的位置，如果是-100，则是余-40，是右到左的第二个tickspace
         uint256 bal0 = IERC20(token0).balanceOf(address(this));
         uint256 bal1 = IERC20(token1).balanceOf(address(this));
-        uint256 _price = price();
+        uint256 _price = price();//p = token1/token0 with decimals
+        //@audit Q: 他的price()函数直接拿的sqrtPriceX96，如果没有对两个货币进行对应的decimal调整，就会出现 bug,目前看来并没有进行这种调整
+        //接下来他将token0转化为token1的数量，然后和token1的数量进行比较
         uint256 bal0in1 = bal0 * _price / PRECISION; // usually either of them should be 0, but might be non-zero due to rounding when minting
 
-        if (bal0in1 < bal1) {
+        if (bal0in1 < bal1) {//0的价值比1的小
             secondaryPosition.tickLower = mainPosition.tickLower;
-            secondaryPosition.tickUpper = tick - modulo;
+            secondaryPosition.tickUpper = tick - modulo;//偏左侧情况下的border设为tickUpper->@audit Q:我不知道它的逻辑是什么，如果module是负数怎么办？ bug
         } else {
             secondaryPosition.tickLower = tick - modulo + tickSpacing;
             secondaryPosition.tickUpper = mainPosition.tickUpper; // TODO check if these need to be reversed.
@@ -381,6 +399,7 @@ contract Strategy is Ownable, IStrategy {
         emit NewSecondaryTicks(secondaryPosition.tickLower, secondaryPosition.tickUpper);
     }
 
+    ///✅
     /// @notice Removes all liquidity from both the Main Position and the Secondary position
     function _removeLiquidity() internal {
         _removeFromPosition(mainPosition.liquidity, mainPosition.tickLower, mainPosition.tickUpper);
@@ -389,7 +408,7 @@ contract Strategy is Ownable, IStrategy {
         mainPosition.liquidity = 0;
         secondaryPosition.liquidity = 0;
     }
-
+    ///✅
     /// @notice Changes the Main position's width and triggers a rebalance
     /// @dev Access control is performed within rebalance
     function changePositionWidth(uint24 _newWidth) external {
@@ -398,11 +417,7 @@ contract Strategy is Ownable, IStrategy {
         rebalance();
     }
 
-    /// @notice Changes the rebalancer to new address
-    function changeRebalancer(address newRebalancer) external onlyOwner {
-        rebalancer = newRebalancer;
-    }
-
+    ///✅
     /// @notice Reverts if price is not within range
     function _requirePriceWithinRange() private view {
         require(_priceWithinRange(), "price out of range");
@@ -475,7 +490,7 @@ contract Strategy is Ownable, IStrategy {
 
         if (lastValid == vestPosition.endTs) ongoingVestingPosition = false;
     }
-
+    ///✅
     /// @notice Removes liquidity from a position and collects all funds
     /// @dev Expects fees to have been collect prior. If not, protocol will not receive protocol fee for them.
     /// @param liquidity Liquidity to remove from the posiiton
@@ -494,6 +509,9 @@ contract Strategy is Ownable, IStrategy {
         }
     }
 
+    /*//////////////////////////////////////////////////////////////
+                                  VIEW
+    //////////////////////////////////////////////////////////////*/
     /// @notice Returns the current balances of the Strategy
     /// @dev Results will only be 100% accurate if collect fees has been called right before this
     /// @dev Otherwise, this will not include outstanding fees and the vested, but not yet claimed, part of VestingPosition
@@ -535,6 +553,15 @@ contract Strategy is Ownable, IStrategy {
         return vestPosition;
     }
 
+
+    /*//////////////////////////////////////////////////////////////
+                                ONLYOWNER
+    //////////////////////////////////////////////////////////////*/
+    
+    /// @notice Changes the rebalancer to new address
+    function changeRebalancer(address newRebalancer) external onlyOwner {
+        rebalancer = newRebalancer;
+    }
     /// @notice Changes the fee recipient to new address
     /// @param _newRecipient The address of the new fee recipient
     function changeFeeRecipient(address _newRecipient) external onlyOwner {
