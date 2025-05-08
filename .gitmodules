@@ -10,3 +10,6 @@
 [submodule "yieldoor/lib/v3-periphery"]
 	path = yieldoor/lib/v3-periphery
 	url = https://github.com/Uniswap/v3-periphery
+[submodule "yieldoor/lib/chimera"]
+	path = yieldoor/lib/chimera
+	url = https://github.com/Recon-Fuzz/chimera
