@@ -52,14 +52,14 @@ contract Vault is ERC20, Ownable {
         IStrategy(strategy).collectFees();
 
         (uint256 totalBalance0, uint256 totalBalance1) = IStrategy(strategy).balances();
-        //@audit Q: 用户希望存的和实际要存的？这个差距从哪里来，为什么要这样设计？MEV？
+      
         (shares, depositAmount0, depositAmount1) = _calcDeposit(totalBalance0, totalBalance1, amount0, amount1);
 
         IERC20(token0).safeTransferFrom(msg.sender, strategy, depositAmount0);
         IERC20(token1).safeTransferFrom(msg.sender, strategy, depositAmount1); // after deposit, funds remain idle, until compound is called
         //@audit Q: s =s-  s*d/10000,
         //          so:s(1000-d)/10000,any decimal issue here?
-        if (depositFee > 0) shares -= (shares * depositFee) / 10_000;// if() xxx condition?
+        if (depositFee > 0) shares -= (shares * depositFee) / 10_000;
 
         require(shares > 0, "shares cant be 0");
         require(depositAmount0 >= amount0Min, "slippage0");
@@ -86,7 +86,7 @@ contract Vault is ERC20, Ownable {
 
         (uint256 totalBalance0, uint256 totalBalance1) = IStrategy(strategy).balances();
 
-        uint256 totalSupply = totalSupply();//@audit Q: 重叠的命名，会有问题吗？
+        uint256 totalSupply = totalSupply();
         _burn(msg.sender, shares);
 
         withdrawAmount0 = totalBalance0 * shares / totalSupply;
@@ -97,8 +97,8 @@ contract Vault is ERC20, Ownable {
         if (idle0 < withdrawAmount0 || idle1 < withdrawAmount1) {
             // When withdrawing partial, there might be a few wei difference.
             (withdrawAmount0, withdrawAmount1) = IStrategy(strategy).withdrawPartial(shares, totalSupply);
-        }//@audit Q: 为什么要弄两个withdrawAmount,不能在一开始就用withdrawPartial吗？
-
+        }
+        //余额不足
         require(withdrawAmount0 >= minAmount0 && withdrawAmount1 >= minAmount1, "slippage protection");
 
         IERC20(token0).safeTransferFrom(strategy, msg.sender, withdrawAmount0);

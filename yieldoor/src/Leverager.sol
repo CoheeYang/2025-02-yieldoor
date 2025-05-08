@@ -126,13 +126,13 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
         (uint256 shares, uint256 a0, uint256 a1) =
             IVault(lp.vault).deposit(lp.vault0In, lp.vault1In, lp.min0in, lp.min1in);
 
-        up.initCollateralUsd = _calculateTokenValues(up.token0, up.token1, a0, a1, price); // returns the USD price in 1e18
-        uint256 bPrice = IPriceFeed(pricefeed).getPrice(lp.denomination);
-        up.initCollateralValue = up.initCollateralUsd * (10 ** ERC20(lp.denomination).decimals()) / bPrice;//@audit Q: 这里的计算是什么意思
+        up.initCollateralUsd = _calculateTokenValues(up.token0, up.token1, a0, a1, price); // returns the USD price of collateral in 1e18
+        uint256 bPrice = IPriceFeed(pricefeed).getPrice(lp.denomination);//得到计价货币的USD价格
+        up.initCollateralValue = up.initCollateralUsd * (10 ** ERC20(lp.denomination).decimals()) / bPrice;//这个都没用上
 
         {
             // we first borrow the maximum amount the user is willing to borrow. Any unused within the swaps is later repaid.
-            ILendingPool(lendingPool).borrow(lp.denomination, lp.maxBorrowAmount);//借一波计价货币的额度
+            ILendingPool(lendingPool).borrow(lp.denomination, lp.maxBorrowAmount);//借一波计价货币最满的额度2w
 
             IMainnetRouter.ExactOutputParams memory swapParams;
 
@@ -140,7 +140,7 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             // Otherwise, attacker could utilize this to swap out all of the share tokens out of here.
             // We do not verify here that the output tokens is one of the lp tokens. If for some reason it isn't
             // The transaction will later revert within `pushFunds`
-            if (a0 > lp.amount0In && up.token0 != lp.denomination) {//实际存入vault的金额大于用户给的金额
+            if (a0 > lp.amount0In && up.token0 != lp.denomination) {//实际存入vault的金额a0大于用户给的金额amount0In,且token0不是计价货币
                 swapParams = abi.decode(lp.swapParams1, (IMainnetRouter.ExactOutputParams));
 
                 address tokenIn = _getTokenIn(swapParams.path);
@@ -148,8 +148,8 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
                 IERC20(tokenIn).forceApprove(swapRouter, swapParams.amountInMaximum);
 
-                swapParams.amountOut = a0 - lp.amount0In;//@audit E: 假设用户有1ETH作为amount0In,而vault0In存入的是2ETH，闪电贷借了1ETH,存入vaulta0蹦出2.1ETH，
-                                                            //        用swap先换出1.1ETH差额，之后剩下的钱还给那个fund
+                swapParams.amountOut = a0 - lp.amount0In;//@audit E: 假设用户有1ETH作为amount0In,而vault0In存入的是2ETH，闪电贷借了1ETH,存入vault的a0蹦出2.1ETH，
+                                                            //        用swap先换出1.1ETH差额，之后剩下的钱还给那个fund，所以之前要借满额度
                 IMainnetRouter(swapRouter).exactOutput(swapParams);
                 IERC20(tokenIn).forceApprove(swapRouter, 0);
             }
@@ -166,12 +166,12 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
             }
         }
 
-        if (delta0 > 0) ILendingPool(lendingPool).pushFunds(up.token0, delta0);
+        if (delta0 > 0) ILendingPool(lendingPool).pushFunds(up.token0, delta0);//把之前闪电贷的钱还了
         if (delta1 > 0) ILendingPool(lendingPool).pushFunds(up.token1, delta1);
 
         uint256 denomBalance = IERC20(lp.denomination).balanceOf(address(this));//@audit Q: 为什么用address(this) 还一波计价资产的价格
         ILendingPool(lendingPool).repay(lp.denomination, denomBalance);//@audit Q: 转这个账户合约的所有token会不会出现问题？如果有人提前偷偷给这个合约转了token怎么办
-
+        //repay--114444,459,192 for case  transfer 10_000
         // if for some reason there have previously been a large amount of tokens "stuck", this could fail
         // this is ok as 1) its unlikely 2) anyone could sweep them 3) likely MEV bot would sweep them within seconds
         // Although opening positions is time-sensitive, please do not report this as a vulnerability, ty.
@@ -200,6 +200,8 @@ contract Leverager is ReentrancyGuard, Ownable, ERC721, ILeverager {
 
         return _id;
     }
+
+    
 
     /// @notice Withdraws a certain percentage of a user's leveraged position.
     /// @dev Check the ILeverager contract for comments on all WithdrawParams arguments

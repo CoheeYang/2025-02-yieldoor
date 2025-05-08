@@ -1,0 +1,2 @@
+lib/v3-core/:@openzeppelin/=lib/v3-core//node_modules/@openzeppelin/
+lib/v3-periphery/:@openzeppelin/=lib/v3-periphery/node_modules/@openzeppelin/

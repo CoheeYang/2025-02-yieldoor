@@ -11,10 +11,12 @@ Sonic, Base, Optimism, Arbitrum
 ___
 
 ### Q: If you are integrating tokens, are you allowing only whitelisted tokens to work with the codebase or any complying with the standard? Are they assumed to have certain properties, e.g. be non-reentrant? Are there any types of [weird tokens](https://github.com/d-xo/weird-erc20) you want to integrate?
+
 Protocol will work only with standard ERC20 tokens.
 ___
 
 ### Q: Are there any limitations on values set by admins (or other roles) in the codebase, including restrictions on array lengths?
+
 The following limitations apply:
  - Owner is trusted.
  - No market will allow leverage higher than 5x.
@@ -68,5 +70,4 @@ Please refer to the following [Security Docs](https://docs.google.com/document/d
 - [yieldoor/src/libraries/ReserveLogic.sol](yieldoor/src/libraries/ReserveLogic.sol)
 - [yieldoor/src/types/DataTypes.sol](yieldoor/src/types/DataTypes.sol)
 - [yieldoor/src/yToken.sol](yieldoor/src/yToken.sol)
-
 

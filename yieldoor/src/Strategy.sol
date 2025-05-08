@@ -230,7 +230,6 @@ contract Strategy is Ownable, IStrategy {
         amount1 = IERC20(token1).balanceOf(address(this));
     }
 
-    //❌@audit it raises potential issue
     /// @notice Returns the token0/token1 spot price in 1e30 precision
     function price() public view returns (uint256 _price) {
         (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
@@ -241,8 +240,8 @@ contract Strategy is Ownable, IStrategy {
     /// @notice Calculates and sets the ticks of the main position
     /// @dev Checks if the nearest initializable tick is lower or higher than the current tick
     function _setMainTicks(int24 tick) internal {//
-        int24 halfWidth = int24(positionWidth / 2);//positionWidth = x*tickSpacing,x=2,4,6....
-        int24 modulo = tick % tickSpacing; // 
+        int24 halfWidth = int24(positionWidth / 2);//positionWidth = x*tickSpacing,x=2,4,6....,in this case x=4。haflwidth =2 (tickspacing =1)
+        int24 modulo = tick % tickSpacing; // modulo =0 if tickspcing =0
         if (modulo < 0) modulo += tickSpacing; // 
         bool isLowerSided = modulo < (tickSpacing / 2);//通过module来看，当前的点tick是离其左边刻度近还是右边刻度近
 
@@ -375,22 +374,20 @@ contract Strategy is Ownable, IStrategy {
         return (FullMath.mulDiv(sqrtPrice, 1e15, 2 ** 96) ** 2);
     }
 
-    /// ❌
+    /// ✅
     /// @notice Sets the secondary position ticks.
     /// @dev This position should always be created consisting of just one of the tokens
     /// @dev Should initially be Out-Of-Range
     function _setSecondaryPositionsTicks(int24 tick) internal {
         int24 modulo = tick % tickSpacing;//当前tick所在tickspace多出的空间，如这个流动性池的tickspace为60，tick=100，那么modulo=40,是第二个tickspace中的位置，如果是-100，则是余-40，是右到左的第二个tickspace
-        uint256 bal0 = IERC20(token0).balanceOf(address(this));
-        uint256 bal1 = IERC20(token1).balanceOf(address(this));
+        uint256 bal0 = IERC20(token0).balanceOf(address(this));// 100e18
+        uint256 bal1 = IERC20(token1).balanceOf(address(this));// 10e6
         uint256 _price = price();//p = token1/token0 with decimals
-        //@audit Q: 他的price()函数直接拿的sqrtPriceX96，如果没有对两个货币进行对应的decimal调整，就会出现 bug,目前看来并没有进行这种调整
-        //接下来他将token0转化为token1的数量，然后和token1的数量进行比较
         uint256 bal0in1 = bal0 * _price / PRECISION; // usually either of them should be 0, but might be non-zero due to rounding when minting
 
         if (bal0in1 < bal1) {//0的价值比1的小
             secondaryPosition.tickLower = mainPosition.tickLower;
-            secondaryPosition.tickUpper = tick - modulo;//偏左侧情况下的border设为tickUpper->@audit Q:我不知道它的逻辑是什么，如果module是负数怎么办？ bug
+            secondaryPosition.tickUpper = tick - modulo;//偏左侧情况下的border设为tickUpper->@audit Q:我不知道它的逻辑是什么，如果module是负数怎么办？
         } else {
             secondaryPosition.tickLower = tick - modulo + tickSpacing;
             secondaryPosition.tickUpper = mainPosition.tickUpper; // TODO check if these need to be reversed.
@@ -593,7 +590,8 @@ contract Strategy is Ownable, IStrategy {
     /// @notice Sets the new minimum interval that needs to have passed since last rebalance, in order to rebalance again
     /// @param _rebalanceInterval New interval
     function setRebalanceInterval(uint256 _rebalanceInterval) external onlyOwner {
-        require(_rebalanceInterval > 30 && _rebalanceInterval < 7200, "new interval not within bounds");
+        // @audit : this requirement is commented for fuzzing
+        // require(_rebalanceInterval > 30 && _rebalanceInterval < 7200, "new interval not within bounds");
         rebalanceInterval = _rebalanceInterval;
     }
 
